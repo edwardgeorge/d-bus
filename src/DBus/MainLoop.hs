@@ -235,7 +235,18 @@ connectBusWithAuth :: ConnectionType -- ^ Bus to connect to
                    -> MethodCallHandler -- ^ Handler for incoming method calls
                    -> SignalHandler  -- ^ Handler for incoming signals
                    -> IO DBusConnection
-connectBusWithAuth transport auth handleCalls handleSignals = do
+connectBusWithAuth = connectBusWithAuth' stdSink
+
+stdSink :: (((MessageHeader, [SomeDBusValue]) -> IO ()) -> C.Sink BS.ByteString IO ())
+stdSink f = parseMessages C.$= C.awaitForever (liftIO . f)
+
+connectBusWithAuth' :: (((MessageHeader, [SomeDBusValue]) -> IO ()) -> C.Sink BS.ByteString IO ())
+                    -> ConnectionType -- ^ Bus to connect to
+                    -> SASL BS.ByteString -- ^ The authentication mechanism
+                    -> MethodCallHandler -- ^ Handler for incoming method calls
+                    -> SignalHandler  -- ^ Handler for incoming signals
+                    -> IO DBusConnection
+connectBusWithAuth' dsHandler transport auth handleCalls handleSignals = do
     addressString <- case transport of
         Session -> getEnv "DBUS_SESSION_BUS_ADDRESS"
         System -> do
@@ -304,15 +315,12 @@ connectBusWithAuth transport auth handleCalls handleSignals = do
     conn <- mfix $ \conn' -> do
         debugM "DBus" $ "Forking"
         handlerThread <- forkIO $
-            (CB.sourceHandle h
-                C.$= parseMessages
-                C.$$ (C.awaitForever $ liftIO .
-                      handleMessage (handleCalls conn')
-                                    (handleSignals conn')
-                                    answerSlots
-                                    signalSlots
-                                    propertySlots
-                     )
+            (CB.sourceHandle h C.$$ dsHandler
+                                      (handleMessage (handleCalls conn')
+                                                     (handleSignals conn')
+                                                     answerSlots
+                                                     signalSlots
+                                                     propertySlots)
             ) `Ex.finally` kill
         addTVarFinalizer gcRef' $ killThread handlerThread
         let conn = DBusConnection { dBusCreateSerial = getSerial

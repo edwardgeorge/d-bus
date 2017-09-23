@@ -3,6 +3,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -256,7 +257,6 @@ errorMessage sid rsid dest name text args =
     in serializeMessage header (maybe id (\t -> (DBV (DBVString t) :))
                                           text args)
 
-
 serializeMessage :: MessageHeader -> [SomeDBusValue] -> BS.Builder
 serializeMessage head' args =
     let vs = putValues args
@@ -270,27 +270,40 @@ serializeMessage head' args =
         alignPut 8
         vs
 
-getMessage :: B.Get (MessageHeader, [SomeDBusValue])
-getMessage = do
-    mbEndian <- fromRep <$> (B.lookAhead $ runReaderT getDBV Little)
+getMessageHeader :: B.Get MessageHeader
+getMessageHeader = do
+    mbEndian <- fromRep <$> B.lookAhead (runReaderT getDBV Little)
     endian' <- case mbEndian of
         Nothing -> fail "could not read endiannes flag"
         Just e -> return e
     flip runReaderT endian' $ do
         mbHeader <- fromRep <$> getDBV
-        header <- case mbHeader of
+        case mbHeader of
             Nothing -> fail "Header has wrong type"
             Just h -> return h
+
+getMessageArgs :: MessageHeader -> B.Get [SomeDBusValue]
+getMessageArgs header
+  = flip runReaderT (endianessFlag header) $ do
         alignGet 8
-        args <- case hFMessageSignature $ fields header of
+        case hFMessageSignature $ fields header of
             Nothing -> return []
             Just (Signature sigs) -> forM sigs $ \t ->
                 getDBVByType t
-        return (header, args)
+
+getMessage :: B.Get (MessageHeader, [SomeDBusValue])
+getMessage = do
+    header <- getMessageHeader
+    args <- getMessageArgs header
+    return (header, args)
+
+parseMessages' :: MonadThrow m => B.Get a
+               -> C.ConduitM BS.ByteString a m b
+parseMessages' f = forever $ C.yield =<< sinkGet f
 
 parseMessages :: MonadThrow m =>
                  C.ConduitM BS.ByteString (MessageHeader, [SomeDBusValue]) m b
-parseMessages = forever $ C.yield =<< sinkGet getMessage
+parseMessages = parseMessages' getMessage
 
 sendBS :: DBusConnection -> BS.Builder -> IO ()
 sendBS conn bs = do
