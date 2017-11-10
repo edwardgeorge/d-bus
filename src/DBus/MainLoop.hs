@@ -246,7 +246,15 @@ connectBusWithAuth' :: (((MessageHeader, [SomeDBusValue]) -> IO ()) -> C.Sink BS
                     -> MethodCallHandler -- ^ Handler for incoming method calls
                     -> SignalHandler  -- ^ Handler for incoming signals
                     -> IO DBusConnection
-connectBusWithAuth' dsHandler transport auth handleCalls handleSignals = do
+connectBusWithAuth' dsHandler = connectBusWithAuth'' $ \h k -> CB.sourceHandle h C.$$ dsHandler k
+
+connectBusWithAuth'' :: (Handle -> ((MessageHeader, [SomeDBusValue]) -> IO ()) -> IO ())
+                     -> ConnectionType -- ^ Bus to connect to
+                     -> SASL BS.ByteString -- ^ The authentication mechanism
+                     -> MethodCallHandler -- ^ Handler for incoming method calls
+                     -> SignalHandler  -- ^ Handler for incoming signals
+                     -> IO DBusConnection
+connectBusWithAuth'' dsHandler transport auth handleCalls handleSignals = do
     addressString <- case transport of
         Session -> getEnv "DBUS_SESSION_BUS_ADDRESS"
         System -> do
@@ -315,13 +323,11 @@ connectBusWithAuth' dsHandler transport auth handleCalls handleSignals = do
     conn <- mfix $ \conn' -> do
         debugM "DBus" $ "Forking"
         handlerThread <- forkIO $
-            (CB.sourceHandle h C.$$ dsHandler
-                                      (handleMessage (handleCalls conn')
-                                                     (handleSignals conn')
-                                                     answerSlots
-                                                     signalSlots
-                                                     propertySlots)
-            ) `Ex.finally` kill
+            dsHandler h (handleMessage (handleCalls conn')
+                                       (handleSignals conn')
+                                       answerSlots
+                                       signalSlots
+                                       propertySlots) `Ex.finally` kill
         addTVarFinalizer gcRef' $ killThread handlerThread
         let conn = DBusConnection { dBusCreateSerial = getSerial
                                   , dBusAnswerSlots = answerSlots
