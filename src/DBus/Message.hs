@@ -280,12 +280,11 @@ getMessageHeader = do
         mbHeader <- fromRep <$> getDBV
         case mbHeader of
             Nothing -> fail "Header has wrong type"
-            Just h -> return h
+            Just h -> alignGet 8 >> return h
 
 getMessageArgs :: MessageHeader -> B.Get [SomeDBusValue]
 getMessageArgs header
-  = flip runReaderT (endianessFlag header) $ do
-        alignGet 8
+  = flip runReaderT (endianessFlag header) $
         case hFMessageSignature $ fields header of
             Nothing -> return []
             Just (Signature sigs) -> forM sigs $ \t ->
